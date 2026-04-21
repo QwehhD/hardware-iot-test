@@ -17,6 +17,11 @@ const int potPin = 1;
 const int RGB_PIN = 48;
 const int NUM_PIXELS = 1;
 
+// Smoothing: moving average filter
+const int SAMPLE_SIZE = 10;
+int samples[SAMPLE_SIZE] = {0};
+int sampleIndex = 0;
+
 Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -36,7 +41,7 @@ void callback(char *topic, byte *payload, unsigned int length) {
   StaticJsonDocument<200> doc;
   deserializeJson(doc, payload, length);
 
-  if (String(topic) == "oldynew/actuator/rgb") {
+  if (String(topic) == "monitor/actuator/rgb") {
     int r = doc["red_val"] | 0;
     int g = doc["green_val"] | 0;
     int b = doc["blue_val"] | 0;
@@ -47,14 +52,26 @@ void callback(char *topic, byte *payload, unsigned int length) {
 
 void reconnect() {
   while (!client.connected()) {
-    if (client.connect("ESP32S3_OldyNew", mqtt_user, mqtt_pass)) {
-      client.subscribe("oldynew/actuator/rgb");
+    if (client.connect("ESP32S3", mqtt_user, mqtt_pass)) {
+      client.subscribe("monitor/actuator/rgb");
       pixel.setPixelColor(0, pixel.Color(0, 255, 0));
       pixel.show();
     } else {
       delay(5000);
     }
   }
+}
+
+// Smoothing function - moving average to reduce noise
+int readSmoothedPot() {
+  samples[sampleIndex] = analogRead(potPin);
+  sampleIndex = (sampleIndex + 1) % SAMPLE_SIZE;
+  
+  int sum = 0;
+  for(int i = 0; i < SAMPLE_SIZE; i++) {
+    sum += samples[i];
+  }
+  return sum / SAMPLE_SIZE;
 }
 
 void setup() {
@@ -75,11 +92,12 @@ void loop() {
   }
   client.loop();
 
-  int nilaiPot = analogRead(potPin);
-  int persen = map(nilaiPot, 0, 4095, 0, 100);
+  int smoothedValue = readSmoothedPot();
+  int persen = map(smoothedValue, 0, 4095, 0, 100);
 
-  if (abs(persen - lastPersen) > 1) { 
-    if (millis() - lastMsg > 500) { 
+  // Threshold increased from 1 to 5%, delay increased from 500ms to 1000ms
+  if (abs(persen - lastPersen) > 5) { 
+    if (millis() - lastMsg > 1000) { 
       lastMsg = millis();
       lastPersen = persen;
 
@@ -88,7 +106,9 @@ void loop() {
       char buffer[64];
       serializeJson(doc, buffer);
       
-      client.publish("oldynew/sensor/pot", buffer);
+      client.publish("monitor/sensor/pot", buffer);
+      Serial.print("Published potentiometer: ");
+      Serial.println(persen);
     }
   }
 }
